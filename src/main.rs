@@ -1,14 +1,17 @@
-use image::{imageops, DynamicImage, GenericImageView, ImageBuffer, Rgb};
-use std::fs;
+use clap::Parser;
+use image::{imageops, ImageBuffer, Rgb};
+use std::{collections::HashMap, fs};
 
 const SQUARE_SIZE: u32 = 32;
 
+#[derive(Debug)]
 struct Square {
     x: u32,
     y: u32,
     color: Rgb<u8>,
 }
 
+#[derive(Debug)]
 struct PixelImage {
     dimensions: (u32, u32),
     squares: Vec<Square>,
@@ -74,6 +77,7 @@ fn divide_image_into_squares(img: &ImageBuffer<Rgb<u8>, Vec<u8>>, square_size: u
     }
 }
 
+#[allow(dead_code)]
 fn create_pixelate_image(filename: String, mut img_pixels: PixelImage) {
     let mut image_buffer: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::new(
         img_pixels.dimensions.0 * SQUARE_SIZE,
@@ -100,28 +104,93 @@ fn write_image(
     x: u32,
     y: u32,
 ) {
-    src_img.enumerate_pixels().for_each(|pixel| {
+    let img_resize = imageops::resize(
+        src_img,
+        SQUARE_SIZE,
+        SQUARE_SIZE,
+        imageops::FilterType::Gaussian,
+    );
+    img_resize.enumerate_pixels().for_each(|pixel| {
         dest_img.put_pixel(x + pixel.0, y + pixel.1, *pixel.2);
     });
-
-    dest_img.save("test2.png").unwrap();
 }
 
-fn min_dimension(dynamic_image: &DynamicImage) -> u32 {
-    dynamic_image
-        .dimensions()
-        .0
-        .min(dynamic_image.dimensions().1)
+fn list_source_images_mean(source_path_folder: String) -> HashMap<String, Rgb<u8>> {
+    let mut hash_map = HashMap::<String, Rgb<u8>>::new();
+
+    for file in fs::read_dir(source_path_folder).unwrap() {
+        let file_path = file.unwrap().path().display().to_string();
+        let file_img = image::open(file_path.clone()).unwrap();
+
+        hash_map.insert(file_path, calculate_rgb_mean(&file_img.into_rgb8()));
+    }
+
+    hash_map
+}
+
+pub fn euclidean_distance(color: Rgb<u8>, other_color: Rgb<u8>) -> f64 {
+    let r_diff = color[0] as f64 - other_color[0] as f64;
+    let g_diff = color[1] as f64 - other_color[1] as f64;
+    let b_diff = color[2] as f64 - other_color[2] as f64;
+
+    let squared_distance = r_diff * r_diff + g_diff * g_diff + b_diff * b_diff;
+
+    squared_distance.sqrt()
+}
+
+fn find_closest_source_image(hash_map: &HashMap<String, Rgb<u8>>, color: Rgb<u8>) -> String {
+    let mut minimum_distance: f64 = f64::MAX;
+    let mut key_value: String = Default::default();
+
+    hash_map.iter().for_each(|(key, value)| {
+        let map_color = *value;
+        let distance = euclidean_distance(color, map_color);
+
+        if distance <= minimum_distance {
+            key_value = key.to_string();
+            minimum_distance = distance;
+        }
+    });
+
+    key_value
+}
+
+#[derive(Parser, Default, Debug)]
+#[clap(author, version, about)]
+struct Arguments {
+    #[arg(short, long)]
+    input_image_path: String,
+
+    #[arg(short, long)]
+    source_image_path: String,
 }
 
 fn main() {
-    let me_img = image::open("assets/input_images/astronaut.jpg").unwrap();
-    let pixel_img = divide_image_into_squares(&me_img.into_rgb8(), SQUARE_SIZE);
+    let args = Arguments::parse();
 
-    for file in fs::read_dir("assets/source_images/").unwrap() {
-        let file_path = file.unwrap().path().display().to_string();
-        let file_img = image::open(file_path).unwrap();
+    let hash_map = list_source_images_mean(args.source_image_path);
 
-        println!("{:?}", calculate_rgb_mean(&file_img.into_rgb8()));
+    let input_img = image::open(args.input_image_path).unwrap();
+
+    let img_pixels = divide_image_into_squares(&input_img.to_rgb8(), SQUARE_SIZE);
+
+    let mut image_buffer_output: ImageBuffer<Rgb<u8>, Vec<u8>> = ImageBuffer::new(
+        img_pixels.dimensions.0 * SQUARE_SIZE,
+        img_pixels.dimensions.1 * SQUARE_SIZE,
+    );
+
+    for square in img_pixels.squares {
+        let image_path = find_closest_source_image(&hash_map, square.color);
+
+        let src_img = image::open(image_path).unwrap().to_rgb8();
+
+        write_image(
+            &src_img,
+            &mut image_buffer_output,
+            square.x * SQUARE_SIZE,
+            square.y * SQUARE_SIZE,
+        );
     }
+
+    image_buffer_output.save("output.png").unwrap();
 }
