@@ -104,18 +104,12 @@ fn write_image(
     x: u32,
     y: u32,
 ) {
-    let img_resize = imageops::resize(
-        src_img,
-        SQUARE_SIZE,
-        SQUARE_SIZE,
-        imageops::FilterType::Gaussian,
-    );
-    img_resize.enumerate_pixels().for_each(|pixel| {
+    src_img.enumerate_pixels().for_each(|pixel| {
         dest_img.put_pixel(x + pixel.0, y + pixel.1, *pixel.2);
     });
 }
 
-fn list_source_images_mean(source_path_folder: String) -> HashMap<String, Rgb<u8>> {
+fn calculate_source_images_means(source_path_folder: String) -> HashMap<String, Rgb<u8>> {
     let mut hash_map = HashMap::<String, Rgb<u8>>::new();
 
     for file in fs::read_dir(source_path_folder).unwrap() {
@@ -155,6 +149,39 @@ fn find_closest_source_image(hash_map: &HashMap<String, Rgb<u8>>, color: Rgb<u8>
     key_value
 }
 
+fn open_and_resize_image(image_path: &str) -> ImageBuffer<Rgb<u8>, Vec<u8>> {
+    let source_image = image::open(image_path).unwrap().to_rgb8();
+    imageops::resize(
+        &source_image,
+        SQUARE_SIZE,
+        SQUARE_SIZE,
+        imageops::FilterType::Gaussian,
+    )
+}
+
+fn match_source_images(
+    img_pixels: &PixelImage,
+    source_image_means: &HashMap<String, Rgb<u8>>,
+    output_image_buffer: &mut ImageBuffer<Rgb<u8>, Vec<u8>>,
+) {
+    let mut source_image_buffers = HashMap::<String, ImageBuffer<Rgb<u8>, Vec<u8>>>::new();
+
+    for square in &img_pixels.squares {
+        let closest_image_path = find_closest_source_image(source_image_means, square.color);
+
+        let source_image_buffer = source_image_buffers
+            .entry(closest_image_path.clone())
+            .or_insert_with(|| open_and_resize_image(&closest_image_path));
+
+        write_image(
+            source_image_buffer,
+            output_image_buffer,
+            square.x * SQUARE_SIZE,
+            square.y * SQUARE_SIZE,
+        );
+    }
+}
+
 #[derive(Parser, Default, Debug)]
 #[clap(author, version, about)]
 struct Arguments {
@@ -163,12 +190,15 @@ struct Arguments {
 
     #[arg(short, long)]
     source_image_path: String,
+
+    #[arg(short, long)]
+    output_image_path: String,
 }
 
 fn main() {
     let args = Arguments::parse();
 
-    let hash_map = list_source_images_mean(args.source_image_path);
+    let hash_map = calculate_source_images_means(args.source_image_path);
 
     let input_img = image::open(args.input_image_path).unwrap();
 
@@ -179,18 +209,7 @@ fn main() {
         img_pixels.dimensions.1 * SQUARE_SIZE,
     );
 
-    for square in img_pixels.squares {
-        let image_path = find_closest_source_image(&hash_map, square.color);
+    match_source_images(&img_pixels, &hash_map, &mut image_buffer_output);
 
-        let src_img = image::open(image_path).unwrap().to_rgb8();
-
-        write_image(
-            &src_img,
-            &mut image_buffer_output,
-            square.x * SQUARE_SIZE,
-            square.y * SQUARE_SIZE,
-        );
-    }
-
-    image_buffer_output.save("output.png").unwrap();
+    image_buffer_output.save(args.output_image_path).unwrap();
 }
